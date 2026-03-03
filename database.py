@@ -11,7 +11,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tg_id INTEGER UNIQUE,
-            stars_balance INTEGER DEFAULT 0,
+            virtual_balance INTEGER DEFAULT 0,
+            real_balance INTEGER DEFAULT 0,
             total_orders INTEGER DEFAULT 0,
             created_at TIMESTAMP
         )
@@ -22,7 +23,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT UNIQUE,
             buyer_id INTEGER,
-            agent_id INTEGER,
+            agent_id INTEGER DEFAULT NULL,
             qr_link TEXT,
             rub_amount INTEGER,
             stars_amount INTEGER,
@@ -56,10 +57,17 @@ def create_user(tg_id):
     conn.commit()
     conn.close()
 
-def update_user_balance(tg_id, amount):
+def update_virtual_balance(tg_id, amount):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("UPDATE users SET stars_balance = stars_balance + ? WHERE tg_id = ?", (amount, tg_id))
+    cur.execute("UPDATE users SET virtual_balance = virtual_balance + ? WHERE tg_id = ?", (amount, tg_id))
+    conn.commit()
+    conn.close()
+
+def update_real_balance(tg_id, amount):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET real_balance = real_balance + ? WHERE tg_id = ?", (amount, tg_id))
     conn.commit()
     conn.close()
 
@@ -73,11 +81,59 @@ def create_order(buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent):
     
     cur.execute("""
         INSERT INTO orders 
-        (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    """, (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent, 'waiting_agent'))
+        (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    """, (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent))
     
     conn.commit()
-    order_id = cur.lastrowid
     conn.close()
     return order_number
+
+def get_order(order_number):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE order_number = ?", (order_number,))
+    order = cur.fetchone()
+    conn.close()
+    return order
+
+def update_order_status(order_number, status, agent_id=None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    if agent_id:
+        cur.execute("""
+            UPDATE orders 
+            SET status = ?, agent_id = ?, taken_at = datetime('now') 
+            WHERE order_number = ?
+        """, (status, agent_id, order_number))
+    else:
+        cur.execute("""
+            UPDATE orders 
+            SET status = ? 
+            WHERE order_number = ?
+        """, (status, order_number))
+    conn.commit()
+    conn.close()
+
+def save_proof_file(order_number, file_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE orders SET proof_file_id = ? WHERE order_number = ?", (file_id, order_number))
+    conn.commit()
+    conn.close()
+
+def get_all_orders(limit=50):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
+    orders = cur.fetchall()
+    conn.close()
+    return orders
+
+def get_all_users():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT tg_id, virtual_balance, real_balance FROM users ORDER BY id")
+    users = cur.fetchall()
+    conn.close()
+    return users

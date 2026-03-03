@@ -6,7 +6,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN
 from database import init_db
-from handlers import start, common, orders
+from handlers import start, common, orders, admin
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,10 +17,13 @@ async def main():
     dp.include_router(start.router)
     dp.include_router(common.router)
     dp.include_router(orders.router)
+    dp.include_router(admin.router)
     
     await bot.set_my_commands([
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="balance", description="Мой баланс"),
+        BotCommand(command="start", description="Запустить"),
+        BotCommand(command="balance", description="Баланс"),
+        BotCommand(command="admin", description="Админка"),
+        BotCommand(command="balances", description="Все балансы"),
         BotCommand(command="help", description="Помощь"),
     ])
     

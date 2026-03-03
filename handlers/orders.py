@@ -3,8 +3,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import re
+import asyncio
 
-from database import get_user, update_user_balance, create_order, get_order, update_order_status, save_proof_file
+from database import get_user, update_virtual_balance, create_order, get_order, update_order_status, save_proof_file
 from config import STARS_RATE, BOT_COMMISSION, CHANNEL_ID, ADMIN_IDS
 
 router = Router()
@@ -18,7 +19,7 @@ class OrderStates(StatesGroup):
 @router.message(lambda message: re.match(r'https?://', message.text))
 async def handle_qr_link(message: types.Message, state: FSMContext):
     await state.update_data(qr_link=message.text.strip())
-    await message.answer("Введите сумму в рублях:")
+    await message.answer("Введите сумму в рублях, которую нужно оплатить:")
     await state.set_state(OrderStates.waiting_for_amount)
 
 @router.message(OrderStates.waiting_for_amount)
@@ -35,16 +36,47 @@ async def process_amount(message: types.Message, state: FSMContext):
     commission = stars_needed * BOT_COMMISSION
     total_stars = int(stars_needed + commission) + 1
     
-    user = get_user(message.from_user.id)
-    if user[2] < total_stars:
-        await message.answer(f"❌ Недостаточно Stars. Баланс: {user[2]}, нужно: {total_stars}")
+    await state.update_data(
+        rub_amount=rub_amount,
+        qr_link=qr_link,
+        stars_needed=stars_needed,
+        total_stars=total_stars
+    )
+    
+    pay_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"💎 Оплатить {total_stars} Stars", callback_data="pay_stars")]
+    ])
+    
+    await message.answer(
+        f"💰 К оплате:\n"
+        f"Сумма: {rub_amount}₽\n"
+        f"Курс: 1 Star = {STARS_RATE}₽\n"
+        f"Комиссия: {BOT_COMMISSION*100}%\n\n"
+        f"Итого Stars: {total_stars}",
+        reply_markup=pay_keyboard
+    )
+
+@router.callback_query(lambda c: c.data == "pay_stars")
+async def pay_stars(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    rub_amount = data.get('rub_amount')
+    qr_link = data.get('qr_link')
+    stars_needed = data.get('stars_needed')
+    total_stars = data.get('total_stars')
+    
+    user = get_user(callback.from_user.id)
+    if int(user[2]) < total_stars:  # virtual_balance = user[2]
+        await callback.message.edit_text(
+            f"❌ Недостаточно Stars. Баланс: {user[2]}, нужно: {total_stars}"
+        )
         await state.clear()
         return
     
-    update_user_balance(message.from_user.id, -total_stars)
+    # Списываем виртуальные Stars
+    update_virtual_balance(callback.from_user.id, -total_stars)
     
     order_number = create_order(
-        buyer_id=message.from_user.id,
+        buyer_id=callback.from_user.id,
         qr_link=qr_link,
         rub_amount=rub_amount,
         stars_amount=total_stars,
@@ -55,7 +87,7 @@ async def process_amount(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="✅ Взять заказ", callback_data=f"take_{order_number}")]
     ])
     
-    await message.bot.send_message(
+    await callback.bot.send_message(
         chat_id=CHANNEL_ID,
         text=(
             f"🆕 **Новый заказ**\n"
@@ -68,17 +100,11 @@ async def process_amount(message: types.Message, state: FSMContext):
         reply_markup=agent_keyboard
     )
     
-    buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Получил товар", callback_data=f"confirm_{order_number}")]
-    ])
-    
-    await message.answer(
+    await callback.message.edit_text(
         f"✅ Заказ {order_number} создан!\n"
         f"Сумма: {rub_amount}₽\n"
-        f"Списано Stars: {total_stars}\n\n"
-        f"Задание отправлено агентам в канал.\n"
-        f"После получения товара нажмите кнопку:",
-        reply_markup=buyer_keyboard
+        f"Списано виртуальных Stars: {total_stars}\n\n"
+        f"Задание отправлено агентам в канал."
     )
     
     await state.clear()
@@ -90,12 +116,8 @@ async def take_order(callback: types.CallbackQuery):
     order_number = callback.data.split('_')[1]
     order = get_order(order_number)
     
-    if not order:
-        await callback.answer("❌ Заказ не найден")
-        return
-    
-    if order[7] != 'waiting_agent':
-        await callback.answer("❌ Заказ уже взят")
+    if not order or order[7] != 'waiting_agent':
+        await callback.answer("❌ Заказ недоступен")
         return
     
     update_order_status(order_number, 'taken', agent_id=callback.from_user.id)
@@ -104,29 +126,57 @@ async def take_order(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="💰 Я оплатил", callback_data=f"paid_{order_number}")]
     ])
     
-    await callback.message.edit_text(
-        callback.message.text + "\n\n✅ Заказ взят агентом"
-    )
-    
     await callback.bot.send_message(
         chat_id=callback.from_user.id,
         text=(
             f"✅ Вы взяли заказ {order_number}\n\n"
-            f"Сумма: {order[5]}₽\n"
-            f"Ссылка: {order[4]}\n\n"
+            f"Сумма к оплате: {order[5]}₽\n"
+            f"Ссылка для оплаты (СБП):\n{order[4]}\n\n"
+            f"⚠️ У вас 2 минуты на оплату!\n"
             f"После оплаты нажмите кнопку:"
         ),
         reply_markup=agent_keyboard
     )
     
+    await callback.message.edit_text(
+        callback.message.text + "\n\n✅ Заказ взят агентом"
+    )
+    
+    asyncio.create_task(agent_timeout(order_number, callback.from_user.id, callback.message.chat.id, callback.message.message_id))
     await callback.answer("✅ Заказ закреплён")
+
+async def agent_timeout(order_number, agent_id, channel_id, message_id):
+    await asyncio.sleep(120)
+    order = get_order(order_number)
+    if order and order[7] == 'taken' and order[8] == agent_id:
+        update_order_status(order_number, 'waiting_agent', agent_id=None)
+        agent_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Взять заказ", callback_data=f"take_{order_number}")]
+        ])
+        try:
+            bot = router.bot
+            await bot.edit_message_text(
+                chat_id=channel_id,
+                message_id=message_id,
+                text=(
+                    f"🆕 **Новый заказ**\n"
+                    f"Номер: `{order_number}`\n"
+                    f"Сумма: {order[5]}₽\n"
+                    f"Награда: {order[6]} Stars\n"
+                    f"[Ссылка для оплаты]({order[4]})\n\n"
+                    f"⚠️ Предыдущий агент не оплатил"
+                ),
+                parse_mode="Markdown",
+                reply_markup=agent_keyboard
+            )
+        except:
+            pass
 
 @router.callback_query(lambda c: c.data.startswith('paid_'))
 async def agent_paid(callback: types.CallbackQuery, state: FSMContext):
     order_number = callback.data.split('_')[1]
-    
     await state.update_data(order_number=order_number)
-    await callback.message.answer("📸 Отправьте скриншот или фото чека об оплате:")
+    await callback.message.answer("📸 Отправьте скриншот оплаты:")
     await state.set_state(OrderStates.waiting_for_proof)
 
 @router.message(OrderStates.waiting_for_proof, lambda message: message.photo)
@@ -145,7 +195,10 @@ async def handle_proof(message: types.Message, state: FSMContext):
     update_order_status(order_number, 'paid_by_agent')
     
     buyer_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Получил товар", callback_data=f"confirm_{order_number}")]
+        [
+            InlineKeyboardButton(text="✅ Получил", callback_data=f"confirm_{order_number}"),
+            InlineKeyboardButton(text="❌ Спор", callback_data=f"dispute_{order_number}")
+        ]
     ])
     
     await message.bot.send_photo(
@@ -154,110 +207,43 @@ async def handle_proof(message: types.Message, state: FSMContext):
         caption=(
             f"📸 Агент оплатил заказ {order_number}\n"
             f"Сумма: {order[5]}₽\n\n"
-            f"Подтвердите получение товара:"
+            f"Товар получен? 15 минут на ответ."
         ),
         reply_markup=buyer_keyboard
     )
     
-    await message.answer("✅ Подтверждение отправлено покупателю")
+    await message.answer("✅ Подтверждение отправлено")
+    asyncio.create_task(buyer_timeout(order_number, message.bot, order[3], order[8]))
     await state.clear()
 
-# ----------------- ПОКУПАТЕЛЬ (ПОДТВЕРЖДЕНИЕ) -----------------
+async def buyer_timeout(order_number, bot, buyer_id, agent_id):
+    await asyncio.sleep(900)
+    order = get_order(order_number)
+    if order and order[7] == 'paid_by_agent':
+        update_virtual_balance(agent_id, order[6])
+        update_order_status(order_number, 'completed')
+        await bot.send_message(agent_id, f"✅ Заказ {order_number} завершен автоматически")
+        await bot.send_message(buyer_id, f"⚠️ Заказ {order_number} завершен автоматически")
 
 @router.callback_query(lambda c: c.data.startswith('confirm_'))
 async def confirm_order(callback: types.CallbackQuery):
     order_number = callback.data.split('_')[1]
     order = get_order(order_number)
     
-    if not order:
-        await callback.answer("❌ Заказ не найден")
-        return
-    
-    if order[7] != 'paid_by_agent':
-        await callback.answer("❌ Заказ ещё не оплачен агентом")
-        return
-    
-    update_user_balance(order[8], order[6])
-    update_order_status(order_number, 'completed')
-    
-    await callback.message.edit_text(
-        callback.message.text + "\n\n✅ Товар получен, спасибо!"
-    )
-    
-    await callback.bot.send_message(
-        chat_id=order[8],
-        text=f"✅ Заказ {order_number} завершен. Stars начислены."
-    )
-    
-    await callback.answer("✅ Спасибо!")
+    if order and order[7] == 'paid_by_agent':
+        update_virtual_balance(order[8], order[6])
+        update_order_status(order_number, 'completed')
+        await callback.message.edit_text(callback.message.text + "\n\n✅ Получено. Stars агенту.")
+        await callback.bot.send_message(order[8], f"✅ Заказ {order_number} завершен")
+        await callback.answer("✅ Спасибо")
+    else:
+        await callback.answer("❌ Ошибка")
 
-# ----------------- АДМИН ПАНЕЛЬ -----------------
-
-@router.message(lambda message: message.text == "/admin")
-async def admin_panel(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ Доступ запрещён")
-        return
-    
-    from database import get_all_orders
-    
-    orders = get_all_orders(limit=20)
-    if not orders:
-        await message.answer("📭 Нет заказов")
-        return
-    
-    text = "📊 **Последние 20 заказов:**\n\n"
-    for order in orders:
-        status_emoji = {
-            'waiting_agent': '🟡',
-            'taken': '🔵',
-            'paid_by_agent': '🟠',
-            'completed': '✅',
-            'dispute': '⚠️'
-        }.get(order[7], '⚪')
-        
-        text += (
-            f"{status_emoji} `{order[2]}`\n"
-            f"   Сумма: {order[5]}₽\n"
-            f"   Статус: {order[7]}\n"
-            f"   Покупатель: {order[3]}\n"
-        )
-        if order[8]:
-            text += f"   Агент: {order[8]}\n"
-        if order[10]:
-            text += f"   📸 Есть скрин\n"
-        text += "\n"
-    
-    await message.answer(text, parse_mode="Markdown")
-
-@router.message(lambda message: message.text.startswith("/order "))
-async def admin_order_detail(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
-    
-    order_number = message.text.split()[1]
-    order = get_order(order_number)
-    
-    if not order:
-        await message.answer("❌ Заказ не найден")
-        return
-    
-    text = (
-        f"📦 **Заказ {order[2]}**\n\n"
-        f"Статус: {order[7]}\n"
-        f"Сумма: {order[5]}₽\n"
-        f"Stars: {order[6]} (агенту: {order[6]})\n"
-        f"Покупатель: {order[3]}\n"
-        f"Агент: {order[8] or 'не назначен'}\n"
-        f"Ссылка: {order[4]}\n"
-        f"Создан: {order[9]}\n"
-    )
-    
-    await message.answer(text, parse_mode="Markdown")
-    
-    if order[10]:
-        await message.bot.send_photo(
-            chat_id=message.from_user.id,
-            photo=order[10],
-            caption="📸 Скриншот оплаты от агента"
-        )
+@router.callback_query(lambda c: c.data.startswith('dispute_'))
+async def dispute_order(callback: types.CallbackQuery):
+    order_number = callback.data.split('_')[1]
+    update_order_status(order_number, 'dispute')
+    await callback.message.edit_text(callback.message.text + "\n\n⚠️ Спор. Админ скоро подключится.")
+    for admin_id in ADMIN_IDS:
+        await callback.bot.send_message(admin_id, f"⚠️ Спор по заказу {order_number}")
+    await callback.answer("✅ Спор открыт")
