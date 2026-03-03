@@ -18,9 +18,9 @@ async def main():
     dp.include_router(common.router)
     
     await bot.set_my_commands([
-        BotCommand(command="start", description="апустить бота"),
-        BotCommand(command="balance", description="ой баланс"),
-        BotCommand(command="help", description="омощь"),
+        BotCommand(command="start", description="запустить бота"),
+        BotCommand(command="balance", description="мой баланс"),
+        BotCommand(command="help", description="помощь"),
     ])
     
     init_db()

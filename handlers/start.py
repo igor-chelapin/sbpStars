@@ -21,10 +21,10 @@ async def cmd_start(message: types.Message):
     ])
     
     await message.answer(
-        "🚀 обро пожаловать в StarsPayBot!\n\n"
-        "урс: 1 Star = 1.5\n"
-        "омиссия: 5%\n\n"
-        "ыберите роль:",
+        "🚀 добро пожаловать в StarsPayBot!\n\n"
+        "курс: 1 Star = 1.5\n"
+        "комиссия: 5%\n\n"
+        "выберите роль:",
         reply_markup=keyboard
     )
 
@@ -37,9 +37,9 @@ async def set_role(callback: types.CallbackQuery):
     await callback.answer(f"✅ оль изменена")
     
     if role == "buyer":
-        text = "🛒 ы покупатель. тправьте ссылку на оплату, чтобы начать."
+        text = "🛒 вы покупатель. отправьте ссылку на оплату, чтобы начать."
     else:
-        text = "💼 ы агент. жидайте заказы в закрытом канале."
+        text = "💼 вы агент. жидайте заказы в закрытом канале."
     
     await callback.message.answer(text)
     await callback.message.delete()
