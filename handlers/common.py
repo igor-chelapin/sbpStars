@@ -13,8 +13,8 @@ async def cmd_balance(message: types.Message):
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
-        "❓ омощь\n\n"
-        "1. ыберите роль (/start)\n"
-        "2. окупатель: отправьте ссылку на оплату\n"
-        "3. гент: выполняйте заказы из канала"
+        "❓ помощь\n\n"
+        "1. выберите роль (/start)\n"
+        "2. покупатель: отправьте ссылку на оплату\n"
+        "3. агент: выполняйте заказы из канала"
     )

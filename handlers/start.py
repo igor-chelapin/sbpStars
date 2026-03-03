@@ -17,14 +17,14 @@ async def cmd_start(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 Я покупатель", callback_data="role_buyer")],
         [InlineKeyboardButton(text="💼 Я агент", callback_data="role_agent")],
-        [InlineKeyboardButton(text="💰 аланс", callback_data="balance")],
+        [InlineKeyboardButton(text="💰 Баланс", callback_data="balance")],
     ])
     
     await message.answer(
-        "🚀 добро пожаловать в StarsPayBot!\n\n"
-        "курс: 1 Star = 1.5\n"
-        "комиссия: 5%\n\n"
-        "выберите роль:",
+        "🚀 Добро пожаловать в StarsPayBot!\n\n"
+        "Курс: 1 Star = 1.5₽\n"
+        "Комиссия: 5%\n\n"
+        "Выберите роль:",
         reply_markup=keyboard
     )
 
@@ -34,12 +34,18 @@ async def set_role(callback: types.CallbackQuery):
     tg_id = callback.from_user.id
     
     update_user_role(tg_id, role)
-    await callback.answer(f"✅ оль изменена")
+    await callback.answer(f"✅ Роль изменена")
     
     if role == "buyer":
-        text = "🛒 вы покупатель. отправьте ссылку на оплату, чтобы начать."
+        text = "🛒 Вы покупатель. Отправьте ссылку на оплату, чтобы начать."
     else:
-        text = "💼 вы агент. жидайте заказы в закрытом канале."
+        text = "💼 Вы агент. Ожидайте заказы в закрытом канале."
     
     await callback.message.answer(text)
     await callback.message.delete()
+
+@router.callback_query(lambda c: c.data == "balance")
+async def callback_balance(callback: types.CallbackQuery):
+    user = get_user(callback.from_user.id)
+    balance = user[3] if user else 0
+    await callback.answer(f"💰 Баланс: {balance} Stars", show_alert=True)
