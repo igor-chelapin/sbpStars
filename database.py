@@ -11,7 +11,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tg_id INTEGER UNIQUE,
-            role TEXT DEFAULT 'buyer',
             stars_balance INTEGER DEFAULT 0,
             total_orders INTEGER DEFAULT 0,
             created_at TIMESTAMP
@@ -47,20 +46,13 @@ def get_user(tg_id):
     conn.close()
     return user
 
-def create_user(tg_id, role='buyer'):
+def create_user(tg_id):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO users (tg_id, role, created_at) VALUES (?, ?, ?)",
-        (tg_id, role, datetime.now())
+        "INSERT INTO users (tg_id, created_at) VALUES (?, ?)",
+        (tg_id, datetime.now())
     )
-    conn.commit()
-    conn.close()
-
-def update_user_role(tg_id, role):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET role = ? WHERE tg_id = ?", (role, tg_id))
     conn.commit()
     conn.close()
 

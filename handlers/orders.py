@@ -4,7 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 import re
 
 from database import get_user, update_user_balance, create_order
-from config import STARS_RATE, BOT_COMMISSION
+from config import STARS_RATE, BOT_COMMISSION, CHANNEL_ID
 
 router = Router()
 
@@ -13,12 +13,6 @@ class OrderStates(StatesGroup):
 
 @router.message(lambda message: re.match(r'https?://', message.text))
 async def handle_qr_link(message: types.Message, state: FSMContext):
-    user = get_user(message.from_user.id)
-    
-    if not user or user[2] != 'buyer':
-        await message.answer("❌ Только покупатели могут создавать заказы")
-        return
-    
     await state.update_data(qr_link=message.text.strip())
     await message.answer("Введите сумму в рублях:")
     await state.set_state(OrderStates.waiting_for_amount)
@@ -38,8 +32,8 @@ async def process_amount(message: types.Message, state: FSMContext):
     total_stars = int(stars_needed + commission) + 1
     
     user = get_user(message.from_user.id)
-    if user[3] < total_stars:
-        await message.answer(f"❌ Недостаточно Stars. Баланс: {user[3]}, нужно: {total_stars}")
+    if user[2] < total_stars:  # balance = user[2] (после удаления role)
+        await message.answer(f"❌ Недостаточно Stars. Баланс: {user[2]}, нужно: {total_stars}")
         await state.clear()
         return
     
@@ -53,12 +47,24 @@ async def process_amount(message: types.Message, state: FSMContext):
         stars_for_agent=int(stars_needed)
     )
     
+    # Отправка в канал
+    await message.bot.send_message(
+        chat_id=CHANNEL_ID,
+        text=(
+            f"🆕 **Новый заказ**\n"
+            f"Номер: {order_number}\n"
+            f"Сумма: {rub_amount}₽\n"
+            f"Награда: {int(stars_needed)} Stars\n"
+            f"[Ссылка для оплаты]({qr_link})"
+        ),
+        parse_mode="Markdown"
+    )
+    
     await message.answer(
         f"✅ Заказ {order_number} создан!\n"
         f"Сумма: {rub_amount}₽\n"
-        f"Списано Stars: {total_stars}\n"
-        f"Агент получит: {int(stars_needed)} Stars\n\n"
-        f"Ищем агента..."
+        f"Списано Stars: {total_stars}\n\n"
+        f"Задание отправлено агентам в канал."
     )
     
     await state.clear()
