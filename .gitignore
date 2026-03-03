@@ -4,4 +4,6 @@
 config_local.py
 venv/
 .vscode/
-*.log
+*.loggit.
+ 
+

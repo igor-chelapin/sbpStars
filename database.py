@@ -32,9 +32,7 @@ def init_db():
             proof_file_id TEXT,
             created_at TIMESTAMP,
             taken_at TIMESTAMP,
-            completed_at TIMESTAMP,
-            FOREIGN KEY(buyer_id) REFERENCES users(tg_id),
-            FOREIGN KEY(agent_id) REFERENCES users(tg_id)
+            completed_at TIMESTAMP
         )
     """)
     
@@ -65,3 +63,29 @@ def update_user_role(tg_id, role):
     cur.execute("UPDATE users SET role = ? WHERE tg_id = ?", (role, tg_id))
     conn.commit()
     conn.close()
+
+def update_user_balance(tg_id, amount):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET stars_balance = stars_balance + ? WHERE tg_id = ?", (amount, tg_id))
+    conn.commit()
+    conn.close()
+
+def create_order(buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    cur.execute("SELECT COUNT(*) FROM orders")
+    count = cur.fetchone()[0] + 1
+    order_number = f"ORD{count:04d}"
+    
+    cur.execute("""
+        INSERT INTO orders 
+        (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    """, (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent, 'waiting_agent'))
+    
+    conn.commit()
+    order_id = cur.lastrowid
+    conn.close()
+    return order_number
