@@ -1,70 +1,210 @@
-from aiogram import Router, types
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-import re
+import sqlite3
+from datetime import datetime
 
-from database import get_user, update_user_balance, create_order
-from config import STARS_RATE, BOT_COMMISSION, CHANNEL_ID
+DB_PATH = "stars_bot.db"
 
-router = Router()
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Таблица пользователей
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id INTEGER UNIQUE,
+            stars_balance INTEGER DEFAULT 0,
+            total_orders INTEGER DEFAULT 0,
+            created_at TIMESTAMP
+        )
+    """)
+    
+    # Таблица заказов
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_number TEXT UNIQUE,
+            buyer_id INTEGER,
+            agent_id INTEGER DEFAULT NULL,
+            qr_link TEXT,
+            rub_amount INTEGER,
+            stars_amount INTEGER,
+            stars_for_agent INTEGER,
+            status TEXT DEFAULT 'waiting_agent',
+            proof_file_id TEXT,
+            created_at TIMESTAMP,
+            taken_at TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
 
-class OrderStates(StatesGroup):
-    waiting_for_amount = State()
+# ---------- ПОЛЬЗОВАТЕЛИ ----------
 
-@router.message(lambda message: re.match(r'https?://', message.text))
-async def handle_qr_link(message: types.Message, state: FSMContext):
-    await state.update_data(qr_link=message.text.strip())
-    await message.answer("Введите сумму в рублях:")
-    await state.set_state(OrderStates.waiting_for_amount)
+def get_user(tg_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,))
+    user = cur.fetchone()
+    conn.close()
+    return user
 
-@router.message(OrderStates.waiting_for_amount)
-async def process_amount(message: types.Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Введите число")
-        return
-    
-    rub_amount = int(message.text)
-    data = await state.get_data()
-    qr_link = data.get('qr_link')
-    
-    stars_needed = rub_amount / STARS_RATE
-    commission = stars_needed * BOT_COMMISSION
-    total_stars = int(stars_needed + commission) + 1
-    
-    user = get_user(message.from_user.id)
-    if user[2] < total_stars:  # balance = user[2] (после удаления role)
-        await message.answer(f"❌ Недостаточно Stars. Баланс: {user[2]}, нужно: {total_stars}")
-        await state.clear()
-        return
-    
-    update_user_balance(message.from_user.id, -total_stars)
-    
-    order_number = create_order(
-        buyer_id=message.from_user.id,
-        qr_link=qr_link,
-        rub_amount=rub_amount,
-        stars_amount=total_stars,
-        stars_for_agent=int(stars_needed)
+def create_user(tg_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO users (tg_id, created_at) VALUES (?, ?)",
+        (tg_id, datetime.now())
     )
+    conn.commit()
+    conn.close()
+
+def update_user_balance(tg_id, amount):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET stars_balance = stars_balance + ? WHERE tg_id = ?", (amount, tg_id))
+    conn.commit()
+    conn.close()
+
+def increment_user_orders(tg_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET total_orders = total_orders + 1 WHERE tg_id = ?", (tg_id,))
+    conn.commit()
+    conn.close()
+
+# ---------- ЗАКАЗЫ ----------
+
+def create_order(buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
     
-    # Отправка в канал
-    await message.bot.send_message(
-        chat_id=CHANNEL_ID,
-        text=(
-            f"🆕 **Новый заказ**\n"
-            f"Номер: {order_number}\n"
-            f"Сумма: {rub_amount}₽\n"
-            f"Награда: {int(stars_needed)} Stars\n"
-            f"[Ссылка для оплаты]({qr_link})"
-        ),
-        parse_mode="Markdown"
-    )
+    cur.execute("SELECT COUNT(*) FROM orders")
+    count = cur.fetchone()[0] + 1
+    order_number = f"ORD{count:04d}"
     
-    await message.answer(
-        f"✅ Заказ {order_number} создан!\n"
-        f"Сумма: {rub_amount}₽\n"
-        f"Списано Stars: {total_stars}\n\n"
-        f"Задание отправлено агентам в канал."
-    )
+    cur.execute("""
+        INSERT INTO orders 
+        (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    """, (order_number, buyer_id, qr_link, rub_amount, stars_amount, stars_for_agent))
     
-    await state.clear()
+    conn.commit()
+    conn.close()
+    return order_number
+
+def get_order(order_number):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE order_number = ?", (order_number,))
+    order = cur.fetchone()
+    conn.close()
+    return order
+
+def get_order_by_id(order_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+    order = cur.fetchone()
+    conn.close()
+    return order
+
+def update_order_status(order_number, status, agent_id=None):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    if agent_id:
+        cur.execute("""
+            UPDATE orders 
+            SET status = ?, agent_id = ?, taken_at = datetime('now') 
+            WHERE order_number = ?
+        """, (status, agent_id, order_number))
+    else:
+        cur.execute("""
+            UPDATE orders 
+            SET status = ? 
+            WHERE order_number = ?
+        """, (status, order_number))
+    
+    conn.commit()
+    conn.close()
+
+def save_proof_file(order_number, file_id):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE orders SET proof_file_id = ? WHERE order_number = ?", (file_id, order_number))
+    conn.commit()
+    conn.close()
+
+def complete_order(order_number):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders 
+        SET status = 'completed', completed_at = datetime('now') 
+        WHERE order_number = ?
+    """, (order_number,))
+    conn.commit()
+    conn.close()
+
+# ---------- АДМИНКА ----------
+
+def get_all_orders(limit=50):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
+    orders = cur.fetchall()
+    conn.close()
+    return orders
+
+def get_orders_by_status(status, limit=50):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit))
+    orders = cur.fetchall()
+    conn.close()
+    return orders
+
+def get_orders_by_agent(agent_id, limit=50):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE agent_id = ? ORDER BY id DESC LIMIT ?", (agent_id, limit))
+    orders = cur.fetchall()
+    conn.close()
+    return orders
+
+def get_orders_by_buyer(buyer_id, limit=50):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE buyer_id = ? ORDER BY id DESC LIMIT ?", (buyer_id, limit))
+    orders = cur.fetchall()
+    conn.close()
+    return orders
+
+def get_stats():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    stats = {}
+    
+    cur.execute("SELECT COUNT(*) FROM orders")
+    stats['total_orders'] = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'completed'")
+    stats['completed_orders'] = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'waiting_agent'")
+    stats['waiting_orders'] = cur.fetchone()[0]
+    
+    cur.execute("SELECT SUM(rub_amount) FROM orders WHERE status = 'completed'")
+    stats['total_rub'] = cur.fetchone()[0] or 0
+    
+    cur.execute("SELECT COUNT(DISTINCT buyer_id) FROM orders")
+    stats['unique_buyers'] = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(DISTINCT agent_id) FROM orders WHERE agent_id IS NOT NULL")
+    stats['unique_agents'] = cur.fetchone()[0]
+    
+    conn.close()
+    return stats
